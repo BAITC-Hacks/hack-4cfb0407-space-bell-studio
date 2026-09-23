@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from catalog import load_catalog, recommend
+from plan_b import with_alternatives
 
 
 def demo_requests(rows):
@@ -17,11 +18,13 @@ def demo_requests(rows):
     }
     cases['E: Первая дата'] = dict(city='Алматы', category='Банкетный зал', date='2026-09-23', event_format='день рождения', budget_kzt=10000000)
     cases['E: Вторая дата'] = dict(cases['E: Первая дата'], date='2026-09-26')
+    cases['F: План Б'] = dict(city='Алматы', category='Банкетный зал', date='2026-09-26',
+                             event_format='день рождения', budget_kzt=2000000)
     return cases
 
 
 def print_result(label, request, rows):
-    result = recommend(rows, request)
+    result = with_alternatives(rows, request, recommend(rows, request))
     print(f"\n{label}: {result['status']}")
     if result['cards']:
         for card in result['cards']:
@@ -37,6 +40,13 @@ def print_result(label, request, rows):
                 print(result['fewer_reason'])
     elif result['status'] == 'NO_MATCH':
         print('Подходящих профилей нет. Счётчики исключений пересекаются: ' + json.dumps(result['exclusions'], ensure_ascii=False))
+        alternative_date = result['alternatives']['alternative_date']
+        minimum_budget = result['alternatives']['minimum_budget']
+        if alternative_date:
+            print(f"План Б — дата: {alternative_date['alternative_date']}; подходящих профилей: {alternative_date['eligible_count']}.")
+        if minimum_budget:
+            shown_price = f"{minimum_budget['minimum_budget_kzt']:,.0f}".replace(',', ' ')
+            print(f"План Б — минимальная начальная цена «от»: {shown_price} ₸.")
     else:
         print('В этом городе нет профиля запрошенной категории.')
 
