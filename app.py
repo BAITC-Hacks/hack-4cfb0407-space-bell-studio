@@ -65,7 +65,7 @@ if submitted:
     else:
         st.caption('Объяснение по правилам; AI не запускался.')
     if result['status'] == 'MATCHED':
-        st.success(f"Найдено подходящих профилей: {result['eligible_count']}. Показано до трёх.")
+        st.success(f"Найдено подходящих профилей: {result['eligible_count']}. Показано: {len(result['cards'])}.")
         for card in result['cards']:
             with st.container(border=True):
                 st.subheader(card['anon_name'])
