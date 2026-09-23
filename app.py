@@ -7,6 +7,7 @@ import streamlit as st
 from agent import run_matching
 from catalog import load_catalog
 from cli import demo_requests
+from comparison import before_selection, comparison_rows, profile_detail, query_delta
 from plan_b import with_alternatives
 
 CATALOG_PATH = Path(__file__).resolve().with_name("contractors.csv")
@@ -71,6 +72,9 @@ languages = sorted({l for p in rows for l in p["languages"]})
 default_day = min(max(date.today(), MIN_DATE), MAX_DATE)
 st.session_state.setdefault("last_request", None)
 st.session_state.setdefault("last_result", None)
+st.session_state.setdefault("last_submitted_request", None)
+st.session_state.setdefault("previous_submitted_request", None)
+st.session_state.setdefault("previous_result", None)
 
 left, right = st.columns([1, 2], gap="large")
 with left:
@@ -110,12 +114,15 @@ if submitted:
     except ValueError:
         st.error("Проверьте дату, бюджет и параметры заказа.")
         st.stop()
+    st.session_state.previous_submitted_request = st.session_state.last_submitted_request
+    st.session_state.previous_result = st.session_state.last_result
+    st.session_state.last_submitted_request = request.copy()
     st.session_state.last_request = request.copy()
     st.session_state.last_result = result
 
 with right:
     st.header("Результаты подбора")
-    request = st.session_state.last_request
+    request = st.session_state.last_submitted_request
     result = st.session_state.last_result
     if result is None:
         st.info("Укажите условия мероприятия и нажмите «Подобрать подрядчиков».")
@@ -144,7 +151,7 @@ with right:
                             st.markdown(f"### {card['price_label']}")
                             st.markdown("**Почему прошёл фильтры**")
                             st.markdown(card["deterministic_facts"])
-                            evidence = card.get("selected_evidence") or (card["evidence"][0]["text"] if card["evidence"] else "")
+                            evidence = profile_detail(card)
                             if evidence:
                                 st.markdown("**AI-выбранная деталь профиля**" if result["source"] == "ai_evidence" else "**Деталь профиля**")
                                 st.markdown(f"«{evidence}»")
@@ -154,6 +161,27 @@ with right:
                             if card["price_imputed"]:
                                 badges.append("Цена оценочная")
                             st.caption(" · ".join(badges))
+                            st.markdown("**Перед выбором уточнить**")
+                            st.caption("; ".join(before_selection(card)))
+
+            compared = comparison_rows(result["cards"], request, rows)
+            if compared:
+                st.subheader("Сравнение вариантов")
+                st.caption("Фактические различия профилей, без рейтинга. Деталь профиля выбрана AI только в AI режиме.")
+                comparison_columns = st.columns(len(compared), gap="small")
+                for column, entry in zip(comparison_columns, compared):
+                    with column:
+                        with st.container(border=True):
+                            for key, value in entry.items():
+                                st.markdown(f"**{key}**")
+                                st.caption(value)
+
+        delta = query_delta(rows, st.session_state.previous_submitted_request,
+                            st.session_state.previous_result, request, result)
+        if delta:
+            st.subheader("Что изменилось с прошлого подбора")
+            for line in delta["lines"]:
+                st.write(line)
 
         if result["status"] == "NO_MATCH" or (result["status"] == "MATCHED" and len(result["cards"]) < 3):
             with st.container(border=True):
