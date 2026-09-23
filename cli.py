@@ -53,7 +53,7 @@ def demo_requests(rows):
     return {
         'Плотная категория': dense,
         'Редкая категория': rare,
-        'Категории нет в городе': dict(city='Алматы', category='Несуществующая категория', date=dense['date'], event_format=dense['event_format'], budget_kzt=1000000),
+        'Категории нет в городе': dict(city='Зарубежье', category='Банкетный зал', date=dense['date'], event_format=dense['event_format'], budget_kzt=1000000),
         'Нет совпадений': dict(city=dense['city'], category=dense['category'], date=dense['date'], event_format=dense['event_format'], budget_kzt=0.01),
     }
 
