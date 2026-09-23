@@ -87,8 +87,8 @@ def main(argv=None):
         request.update(hours=args.hours, language=args.language)
         print_result('Результат', request, rows)
         return 0
-    except (ValueError, OSError, RuntimeError) as exc:
-        print(f'Ошибка: {exc}', file=sys.stderr)
+    except (ValueError, OSError, RuntimeError):
+        print('Ошибка: проверьте параметры запроса и локальный каталог.', file=sys.stderr)
         return 2
 
 
