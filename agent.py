@@ -75,7 +75,10 @@ def _deterministic_summary(result):
         return "Подходящих профилей нет. " + ("; ".join(reasons) if reasons else "Ни один профиль не прошёл фильтры.") + "." + suffix
     count = result.get("eligible_count", len(result["cards"]))
     summary = f"По строгим условиям подошло профилей: {count}; в городе профилей этой категории: {result.get('category_count', count)}."
-    excluded = [f"{key}: {value}" for key, value in result.get("exclusions", {}).items() if value]
+    labels = {"busy": "занято по календарю", "over_budget": "выше бюджета",
+              "format": "неподходящий формат", "language": "неподходящий язык",
+              "duration": "неподходящая длительность"}
+    excluded = [f"{labels[key]}: {value}" for key, value in result.get("exclusions", {}).items() if value]
     if excluded:
         summary += " Причины исключения пересекаются: " + ", ".join(excluded) + "."
     if result.get("fewer_reason"):

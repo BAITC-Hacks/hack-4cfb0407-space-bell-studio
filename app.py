@@ -71,9 +71,9 @@ if submitted:
                 st.subheader(card['anon_name'])
                 st.write(f"{card['category']} · {card['city']} · **{card['price_label']}**")
                 st.text(card['explanation'])
-                st.caption('Синтетический профиль' if card['synthetic'] else 'Анонимизированный профиль')
-                if card['city_imputed']: st.caption('Город оценочный')
-                if card['price_imputed']: st.caption('Цена оценочная')
+                st.caption('Синтетический профиль — пример из датасета' if card['synthetic'] else 'Анонимизированный профиль')
+                if card['city_imputed']: st.caption('Город оценочный — уточните перед заказом')
+                if card['price_imputed']: st.caption('Цена оценочная — уточните перед заказом')
         if result.get('summary'): st.info(result['summary'])
     elif result['status'] == 'NO_CATEGORY_IN_CITY':
         st.warning(f"В каталоге города {city} нет профиля категории «{category}».")
