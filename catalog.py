@@ -1,4 +1,6 @@
 import csv
+import math
+import re
 from datetime import date
 from pathlib import Path
 
@@ -43,10 +45,16 @@ def load_catalog(path):
             try:
                 row["price_from_kzt"] = float(row["price_from_kzt"])
                 row["max_hours"] = float(row["max_hours"]) if row["max_hours"] else None
+                if not math.isfinite(row["price_from_kzt"]) or row["price_from_kzt"] <= 0:
+                    raise ValueError("цена должна быть конечной и положительной")
+                if row["max_hours"] is not None and (not math.isfinite(row["max_hours"]) or row["max_hours"] <= 0):
+                    raise ValueError("max_hours должен быть конечным и положительным")
             except ValueError as exc:
                 raise ValueError(f"Строка {row_number}: некорректное числовое значение") from exc
             for raw_day in row["busy_dates"]:
                 try:
+                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_day):
+                        raise ValueError
                     date.fromisoformat(raw_day)
                 except ValueError as exc:
                     raise ValueError(f"Строка {row_number}: некорректная дата {raw_day}") from exc
@@ -64,7 +72,10 @@ def validate_request(request):
             errors.append(f"Поле {field} обязательно")
         normalized[field] = value.casefold()
     try:
-        parsed_date = date.fromisoformat(str(request.get("date", "")).strip())
+        raw_date = str(request.get("date", "")).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+            raise ValueError
+        parsed_date = date.fromisoformat(raw_date)
         if parsed_date.isoformat() != str(request.get("date", "")).strip():
             raise ValueError
     except ValueError:
@@ -109,8 +120,9 @@ def _has(values, expected):
 
 
 def build_explanation(profile, request):
+    money = lambda value: f"{value:,.0f}".replace(",", " ") if float(value).is_integer() else f"{value:,.2f}".replace(",", " ")
     pieces = [f"По календарю датасета дата {request['date']} не занята",
-              f"начальная цена {profile['price_from_kzt']:g} ₸ укладывается в бюджет {request['budget_kzt']:g} ₸",
+              f"начальная цена {money(profile['price_from_kzt'])} ₸ укладывается в бюджет {money(request['budget_kzt'])} ₸",
               f"подходит формат «{request['event_format']}»"]
     if request.get("language"):
         pieces.append(f"указан язык «{request['language']}»")
@@ -146,5 +158,5 @@ def recommend(catalog, request):
         return {"status": "NO_MATCH", "cards": [], "exclusions": excluded, "exclusions_overlap": True, "category_count": len(group)}
     cards = []
     for p in eligible[:3]:
-        cards.append({"id": p["id"], "anon_name": p["anon_name"], "category": req["category"], "city": p["city"], "price_from_kzt": p["price_from_kzt"], "price_label": f"от {p['price_from_kzt']:g} ₸", "explanation": build_explanation(p, req), "synthetic": p["synthetic"], "city_imputed": p["city_imputed"], "price_imputed": p["price_imputed"], "profile_status": "Синтетический профиль из датасета организаторов" if p["synthetic"] else "Анонимизированный профиль", "city_is_estimated": p["city_imputed"], "price_is_estimated": p["price_imputed"]})
+        cards.append({"id": p["id"], "anon_name": p["anon_name"], "category": req["category"], "city": p["city"], "price_from_kzt": p["price_from_kzt"], "price_label": f"от {format(p['price_from_kzt'], ',.0f').replace(',', ' ')} ₸", "explanation": build_explanation(p, req), "synthetic": p["synthetic"], "city_imputed": p["city_imputed"], "price_imputed": p["price_imputed"], "profile_status": "Синтетический профиль из датасета организаторов" if p["synthetic"] else "Анонимизированный профиль", "city_is_estimated": p["city_imputed"], "price_is_estimated": p["price_imputed"]})
     return {"status": "MATCHED", "cards": cards, "exclusions": excluded, "exclusions_overlap": True, "category_count": len(group), "eligible_count": len(eligible), "fewer_reason": "В городе всего профилей этой категории: " + str(len(group)) if len(cards) < 3 and len(group) <= 2 else "Подходящих профилей по строгим фильтрам: " + str(len(eligible)) if len(cards) < 3 else None}
