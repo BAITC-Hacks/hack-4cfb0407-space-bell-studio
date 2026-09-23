@@ -47,24 +47,28 @@ def main(argv=None):
         if args.check_ai:
             rows = load_catalog(ROOT / 'contractors.csv')
             result = run_matching(rows, CHECK_REQUEST, api_key=key)
-            print('Режим:', 'AI_EVIDENCE' if result['source'] == 'ai_evidence' else 'LOCAL_FALLBACK')
-            print('Запрошенная модель:', result['requested_model'])
-            print('Возвращённая модель:', result['returned_model'] or 'нет')
-            print('API calls:', result['api_calls'], '| tool calls:', result['tool_calls'])
-            print('Candidate IDs:', ', '.join(c['id'] for c in result['cards']) or 'нет')
-            print(f"Полное время: {result['latency_seconds']:.2f} с")
-            for card in result['cards']:
-                print(f"{card['id']}: {card['explanation']}")
-            if result['error_code']:
-                print('Error code:', result['error_code'])
-            return 0 if result['source'] == 'ai_evidence' else 1
+            is_ai = result.get('source') == 'ai_evidence'
+            print('Режим:', 'AI_EVIDENCE' if is_ai else 'LOCAL_FALLBACK')
+            print('Запрошенная модель:', result.get('requested_model') or 'нет')
+            print('Возвращённая модель:', result.get('returned_model') or 'нет')
+            print('API calls:', result.get('api_calls', 0))
+            print('Tool calls:', result.get('tool_calls', 0))
+            cards = result.get('cards') or []
+            print('Candidate IDs:', ', '.join(str(c.get('id', '')) for c in cards) or 'нет')
+            latency = result.get('latency_seconds')
+            print('Latency:', f'{latency:.2f} с' if isinstance(latency, (int, float)) else 'нет')
+            print('AI error code:', result.get('ai_error_code') or 'нет')
+            print('Explanations:')
+            for card in cards:
+                print(f"{card.get('id', '')}: {card.get('explanation', '')}")
+            return 0 if is_ai else 1
         env = os.environ.copy()
         if key:
             env['OPENAI_API_KEY'] = key
         command = [sys.executable, '-m', 'streamlit', 'run', 'app.py', '--server.address', '127.0.0.1']
         return subprocess.call(command, cwd=ROOT, env=env)
-    except RuntimeError as exc:
-        print(f'Ошибка: {exc}', file=sys.stderr)
+    except RuntimeError:
+        print('Ошибка: безопасный локальный запуск недоступен.', file=sys.stderr)
         return 2
     except (OSError, ValueError):
         print('Ошибка: локальный каталог или запуск недоступен.', file=sys.stderr)

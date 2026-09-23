@@ -133,22 +133,28 @@ def _verified_result(tool_result, answer):
     return output, True
 
 
-def _safe_error_code(exc):
+def _safe_error_code(exc, phase):
     name = type(exc).__name__
-    status = getattr(exc, "status_code", None)
+    try:
+        status = getattr(exc, "status_code", None)
+        api_code = getattr(exc, "code", None)
+    except Exception:
+        status = api_code = None
     if name == "AuthenticationError" or status == 401:
         return "AUTH_ERROR"
     if name == "RateLimitError" or status == 429:
         return "QUOTA_OR_RATE_LIMIT"
-    if status == 404:
+    if isinstance(status, int) and status in {400, 404} and isinstance(api_code, str) and api_code in {"model_not_found", "model_not_available", "invalid_model"}:
         return "MODEL_ACCESS_ERROR"
     if name in {"APITimeoutError", "TimeoutError", "ConnectTimeout", "ReadTimeout"}:
         return "TIMEOUT"
     if name in {"APIConnectionError", "NetworkError", "ConnectError"}:
         return "NETWORK_ERROR"
-    if name in {"JSONDecodeError", "ValidationError"} or isinstance(exc, ValueError):
+    if phase in {"tool_response", "final_response"} and isinstance(exc, (ValueError, KeyError, TypeError, AttributeError, IndexError)):
         return "RESPONSE_INVALID"
-    return "SDK_OR_CONFIG_ERROR"
+    if phase == "client_init":
+        return "SDK_OR_CONFIG_ERROR"
+    return "UNKNOWN_API_ERROR"
 
 
 def run_matching(catalog, request, api_key=None, client=None):
@@ -158,23 +164,27 @@ def run_matching(catalog, request, api_key=None, client=None):
     tool_result = recommend_contractors(catalog, normalized)
     output, _ = _verified_result(tool_result, None)
     configured_model = (os.environ.get("OPENAI_MODEL") or "").strip() or DEFAULT_MODEL
-    output.update(tool_calls=0, api_calls=0, requested_model=configured_model, returned_model=None,
-                  latency_seconds=None, error_code=None, skipped_reason=None)
+
+    def finish(result, code=None, api_calls=0, tool_calls=0, returned_model=None, skipped_reason=None):
+        result.update(requested_model=configured_model, returned_model=returned_model,
+                      api_calls=api_calls, tool_calls=tool_calls,
+                      latency_seconds=perf_counter() - started,
+                      ai_error_code=code, error_code=code, skipped_reason=skipped_reason)
+        return result
+
     if not tool_result["cards"]:
-        output["skipped_reason"] = "NO_CANDIDATES"
-        output["latency_seconds"] = perf_counter() - started
-        return output
+        return finish(output, skipped_reason="NO_CANDIDATES")
     key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
     if isinstance(key, str) and not key.strip():
         key = None
     if not key and client is None:
-        output["error_code"] = "KEY_MISSING"
-        output["latency_seconds"] = perf_counter() - started
-        return output
+        return finish(output, code="KEY_MISSING")
     deadline = started + TOTAL_BUDGET_SECONDS
     api_calls = 0
     tool_calls = 0
     response_models = []
+    code = None
+    phase = "client_init"
     try:
         if client is None:
             from openai import OpenAI
@@ -189,12 +199,14 @@ def run_matching(catalog, request, api_key=None, client=None):
         remaining = deadline - perf_counter()
         if remaining <= 0.1:
             raise TimeoutError
+        phase = "first_call"
         api_calls += 1
         first = client.chat.completions.create(
-            model=output["requested_model"], messages=messages, tools=[TOOL],
+            model=configured_model, messages=messages, tools=[TOOL],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             temperature=0, timeout=min(remaining, 8.0), max_tokens=120,
         )
+        phase = "tool_response"
         response_models.append(getattr(first, "model", None))
         calls = first.choices[0].message.tool_calls or []
         if len(calls) != 1 or calls[0].function.name != TOOL_NAME:
@@ -208,23 +220,23 @@ def run_matching(catalog, request, api_key=None, client=None):
         remaining = deadline - perf_counter()
         if remaining <= 0.1:
             raise TimeoutError
+        phase = "second_call"
         api_calls += 1
         second = client.chat.completions.create(
-            model=output["requested_model"], messages=messages, response_format=EVIDENCE_SCHEMA,
+            model=configured_model, messages=messages, response_format=EVIDENCE_SCHEMA,
             temperature=0, max_tokens=220, timeout=min(remaining, 8.0),
         )
+        phase = "final_response"
         response_models.append(getattr(second, "model", None))
         if second.choices[0].finish_reason == "length":
             raise ValueError("truncated response")
         answer = json.loads(second.choices[0].message.content or "")
         output, valid = _verified_result(tool_result, answer)
         if not valid:
-            output["error_code"] = "RESPONSE_INVALID"
+            code = "RESPONSE_INVALID"
     except Exception as exc:
         output, _ = _verified_result(tool_result, None)
-        output["error_code"] = _safe_error_code(exc)
-    output["api_calls"] = api_calls
-    output["tool_calls"] = tool_calls
-    output["returned_model"] = next((model for model in reversed(response_models) if isinstance(model, str)), None)
-    output["latency_seconds"] = perf_counter() - started
-    return output
+        code = _safe_error_code(exc, phase)
+    returned_model = next((model for model in reversed(response_models) if isinstance(model, str)), None)
+    return finish(output, code=code, api_calls=api_calls, tool_calls=tool_calls,
+                  returned_model=returned_model)
