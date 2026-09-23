@@ -2,6 +2,7 @@
 import json
 import os
 import re
+from urllib.parse import urlsplit
 from copy import deepcopy
 from time import perf_counter
 
@@ -136,28 +137,74 @@ def _verified_result(tool_result, answer):
     return output, True
 
 
-def _safe_error_code(exc, phase):
-    name = type(exc).__name__
+SAFE_SERVER_CODES = {
+    "invalid_api_key", "ip_not_authorized", "model_not_found", "insufficient_quota",
+    "credit_balance_exhausted", "rate_limit_exceeded", "invalid_request_error",
+    "authentication_error", "permission_denied",
+}
+
+def create_api_client(api_key, timeout=8.0):
+    """Build the shared SDK client, rejecting non-OpenAI endpoints before key use."""
+    configured = os.environ.get("OPENAI_BASE_URL")
+    base_url = configured.strip() if configured and configured.strip() else "https://api.openai.com/v1"
+    parts = None
     try:
-        status = getattr(exc, "status_code", None)
-        api_code = getattr(exc, "code", None)
-    except Exception:
-        status = api_code = None
-    if name == "AuthenticationError" or status == 401:
-        return "AUTH_ERROR"
-    if name == "RateLimitError" or status == 429:
-        return "QUOTA_OR_RATE_LIMIT"
-    if isinstance(status, int) and status in {400, 404} and isinstance(api_code, str) and api_code in {"model_not_found", "model_not_available", "invalid_model"}:
-        return "MODEL_ACCESS_ERROR"
-    if name in {"APITimeoutError", "TimeoutError", "ConnectTimeout", "ReadTimeout"}:
-        return "TIMEOUT"
-    if name in {"APIConnectionError", "NetworkError", "ConnectError"}:
-        return "NETWORK_ERROR"
-    if phase in {"tool_response", "final_response"} and isinstance(exc, (ValueError, KeyError, TypeError, AttributeError, IndexError)):
-        return "RESPONSE_INVALID"
-    if phase == "client_init":
-        return "SDK_OR_CONFIG_ERROR"
-    return "UNKNOWN_API_ERROR"
+        parts = urlsplit(base_url)
+        safe_endpoint = (parts.scheme.lower(), (parts.hostname or "").lower(), parts.path.rstrip("/"))
+    except ValueError:
+        safe_endpoint = ("", "", "")
+    if (parts is None or safe_endpoint != ("https", "api.openai.com", "/v1")
+            or parts.username or parts.password or parts.query or parts.fragment):
+        raise UnexpectedEndpointError
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
+
+class UnexpectedEndpointError(Exception):
+    pass
+
+def _diagnostic_fields(exc, phase):
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    values = []
+    if isinstance(body, dict):
+        values.append(body)
+        if isinstance(body.get("error"), dict):
+            values.append(body["error"])
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    code = kind = None
+    for obj in values:
+        if code is None and obj.get("code") in SAFE_SERVER_CODES:
+            code = obj["code"]
+        if kind is None and obj.get("type") in SAFE_SERVER_CODES:
+            kind = obj["type"]
+    safe_code = code or "OTHER"
+    safe_type = kind or "OTHER"
+    name = type(exc).__name__
+    if name == "UnexpectedEndpointError":
+        legacy = "UNEXPECTED_API_ENDPOINT"
+    elif status == 401 and code == "ip_not_authorized":
+        legacy = "ACCESS_RESTRICTED"
+    elif status == 401:
+        legacy = "AUTH_ERROR"
+    elif status == 429 and code in {"insufficient_quota", "credit_balance_exhausted"}:
+        legacy = "QUOTA_ERROR"
+    elif status == 429 or code == "rate_limit_exceeded":
+        legacy = "RATE_LIMIT_ERROR"
+    elif code == "model_not_found" or (status in {400, 404} and code in {"model_not_available", "invalid_model"}):
+        legacy = "MODEL_ACCESS_ERROR"
+    elif name in {"APITimeoutError", "TimeoutError", "ConnectTimeout", "ReadTimeout"}:
+        legacy = "TIMEOUT"
+    elif name in {"APIConnectionError", "NetworkError", "ConnectError"}:
+        legacy = "NETWORK_ERROR"
+    elif phase in {"tool_response", "final_response"} and isinstance(exc, (ValueError, KeyError, TypeError, AttributeError, IndexError, json.JSONDecodeError)):
+        legacy = "RESPONSE_INVALID"
+    elif phase == "client_init":
+        legacy = "SDK_OR_CONFIG_ERROR"
+    else:
+        legacy = "UNKNOWN_API_ERROR"
+    return legacy, phase, status if isinstance(status, int) else None, safe_code, safe_type
 
 
 def run_matching(catalog, request, api_key=None, client=None):
@@ -168,11 +215,16 @@ def run_matching(catalog, request, api_key=None, client=None):
     output, _ = _verified_result(tool_result, None)
     configured_model = (os.environ.get("OPENAI_MODEL") or "").strip() or DEFAULT_MODEL
 
-    def finish(result, code=None, api_calls=0, tool_calls=0, returned_model=None, skipped_reason=None):
+    response_models = []
+
+    def finish(result, code=None, api_calls=0, tool_calls=0, returned_model=None, skipped_reason=None, diagnostics=None):
+        diagnostics = diagnostics or (None, None, None, "UNAVAILABLE", "UNAVAILABLE")
         result.update(requested_model=configured_model, returned_model=returned_model,
-                      api_calls=api_calls, tool_calls=tool_calls,
+                      api_calls=api_calls, tool_calls=tool_calls, responses=len(response_models),
                       latency_seconds=perf_counter() - started,
-                      ai_error_code=code, error_code=code, skipped_reason=skipped_reason)
+                      ai_error_code=code, error_code=code, skipped_reason=skipped_reason,
+                      error_phase=diagnostics[1], http_status=diagnostics[2],
+                      safe_server_code=diagnostics[3], safe_server_type=diagnostics[4])
         return result
 
     if not tool_result["cards"]:
@@ -185,16 +237,15 @@ def run_matching(catalog, request, api_key=None, client=None):
     deadline = started + TOTAL_BUDGET_SECONDS
     api_calls = 0
     tool_calls = 0
-    response_models = []
     code = None
+    diagnostics = None
     phase = "client_init"
     try:
         if client is None:
-            from openai import OpenAI
             remaining = deadline - perf_counter()
             if remaining <= 0.1:
                 raise TimeoutError
-            client = OpenAI(api_key=key, timeout=min(remaining, 8.0), max_retries=0)
+            client = create_api_client(key, timeout=min(remaining, 8.0))
         messages = [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": "Select relevant profile evidence for this order: " + json.dumps(normalized, ensure_ascii=False)},
@@ -209,8 +260,8 @@ def run_matching(catalog, request, api_key=None, client=None):
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             temperature=0, timeout=min(remaining, 8.0), max_tokens=120,
         )
-        phase = "tool_response"
         response_models.append(getattr(first, "model", None))
+        phase = "tool_response"
         calls = first.choices[0].message.tool_calls or []
         if len(calls) != 1 or calls[0].function.name != TOOL_NAME:
             raise ValueError("invalid tool response")
@@ -229,8 +280,8 @@ def run_matching(catalog, request, api_key=None, client=None):
             model=configured_model, messages=messages, response_format=EVIDENCE_SCHEMA,
             temperature=0, max_tokens=220, timeout=min(remaining, 8.0),
         )
-        phase = "final_response"
         response_models.append(getattr(second, "model", None))
+        phase = "final_response"
         if second.choices[0].finish_reason == "length":
             raise ValueError("truncated response")
         answer = json.loads(second.choices[0].message.content or "")
@@ -239,7 +290,8 @@ def run_matching(catalog, request, api_key=None, client=None):
             code = "RESPONSE_INVALID"
     except Exception as exc:
         output, _ = _verified_result(tool_result, None)
-        code = _safe_error_code(exc, phase)
+        diagnostics = _diagnostic_fields(exc, phase)
+        code = diagnostics[0]
     returned_model = next((model for model in reversed(response_models) if isinstance(model, str)), None)
     return finish(output, code=code, api_calls=api_calls, tool_calls=tool_calls,
-                  returned_model=returned_model)
+                  returned_model=returned_model, diagnostics=diagnostics)
