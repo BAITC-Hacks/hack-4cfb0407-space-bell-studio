@@ -1,7 +1,10 @@
 import unittest
 from pathlib import Path
 from datetime import date
+from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
+from tests.test_agent import ROWS, REQUEST, fake_client
+from agent import run_matching
 
 class StreamlitSmokeTests(unittest.TestCase):
     def test_matched_form_uses_offline_fallback(self):
@@ -19,10 +22,24 @@ class StreamlitSmokeTests(unittest.TestCase):
         self.assertIn('показываем 3', app.success[0].value)
         self.assertTrue(app.checkbox[0].value)
         self.assertTrue(any('длительность 4 ч' in item.value for item in app.markdown))
-        self.assertTrue(any('Проверенное локальное объяснение' in item.value for item in app.caption))
+        self.assertTrue(any('Локальное объяснение' in item.value for item in app.caption))
         self.assertTrue(any('Синтетический' in item.value for item in app.caption))
         self.assertTrue(any('Город оценочный' in item.value for item in app.caption))
         self.assertTrue(any('Цена оценочная' in item.value for item in app.caption))
+
+    def test_ai_mode_separates_python_facts_from_verified_evidence(self):
+        result = run_matching(ROWS, REQUEST, api_key='offline-test', client=fake_client()[1])
+        self.assertEqual('ai_evidence', result['source'])
+        with patch('agent.run_matching', return_value=result):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'), default_timeout=20).run()
+            app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any('✨ AI-assisted explanation' in item.value for item in app.caption))
+        self.assertTrue(any('Подбор, фильтры и порядок рассчитаны Python' in item.value for item in app.caption))
+        self.assertEqual(len(result['cards']), sum('Почему прошёл фильтры' in item.value for item in app.markdown))
+        self.assertEqual(len(result['cards']), sum('AI-выбранная деталь профиля' in item.value for item in app.markdown))
+        for card in result['cards']:
+            self.assertEqual(1, sum(card['selected_evidence'] in item.value for item in app.markdown))
 
     def test_rare_case_shows_actual_count_and_optional_language(self):
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'), default_timeout=20).run()

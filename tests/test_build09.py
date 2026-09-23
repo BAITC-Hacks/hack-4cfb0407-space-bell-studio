@@ -49,4 +49,24 @@ class Build09Tests(unittest.TestCase):
                 with self.assertRaises(Exception) as e: run_local.create_api_client('secret')
                 self.assertEqual('UnexpectedEndpointError',type(e.exception).__name__)
 
+    def test_web_hidden_key_reaches_subprocess_and_agent_environment(self):
+        out = io.StringIO()
+        with patch.object(run_local, 'hidden_key', return_value='offline-secret'), \
+             patch.object(run_local.subprocess, 'call', return_value=0) as launch, \
+             redirect_stdout(out):
+            self.assertEqual(0, run_local.main(['--web', '--ask-key']))
+        command = launch.call_args.args[0]
+        self.assertEqual([run_local.sys.executable, '-m', 'streamlit', 'run', 'app.py'], command[:5])
+        self.assertEqual('offline-secret', launch.call_args.kwargs['env']['OPENAI_API_KEY'])
+        self.assertNotIn('offline-secret', out.getvalue())
+
+        client = fake_client()
+        with patch.dict(os.environ, {'OPENAI_API_KEY':'offline-secret'}), \
+             patch('agent.create_api_client', return_value=client) as factory:
+            result = run_matching(ROWS, REQUEST)
+        factory.assert_called_once()
+        self.assertEqual('offline-secret', factory.call_args.args[0])
+        self.assertEqual('ai_evidence', result['source'])
+        self.assertEqual(1, result['tool_calls'])
+
 if __name__=='__main__': unittest.main()

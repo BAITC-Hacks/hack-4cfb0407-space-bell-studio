@@ -129,9 +129,9 @@ with right:
         else:
             st.warning("По текущим условиям подходящих вариантов нет")
         if result["source"] == "ai_evidence":
-            st.caption("AI выбрал проверенную деталь профиля · подбор и порядок рассчитаны Python")
+            st.caption("✨ AI-assisted explanation · Подбор, фильтры и порядок рассчитаны Python.")
         else:
-            st.caption("Проверенное локальное объяснение · подбор полностью рассчитан Python")
+            st.caption("Локальное объяснение · подбор, фильтры и порядок рассчитаны Python.")
 
         if result["status"] == "MATCHED":
             for start in range(0, len(result["cards"]), 2):
@@ -142,12 +142,12 @@ with right:
                             st.subheader(card["anon_name"])
                             st.caption(f"{card['category']} · {card['city']}")
                             st.markdown(f"### {card['price_label']}")
-                            st.markdown("**Почему подходит**")
+                            st.markdown("**Почему прошёл фильтры**")
                             st.markdown(card["deterministic_facts"])
                             evidence = card.get("selected_evidence") or (card["evidence"][0]["text"] if card["evidence"] else "")
                             if evidence:
-                                st.markdown("**Особенность профиля**")
-                                st.write(f"«{evidence}»")
+                                st.markdown("**AI-выбранная деталь профиля**" if result["source"] == "ai_evidence" else "**Деталь профиля**")
+                                st.markdown(f"«{evidence}»")
                             badges = ["Синтетический" if card["synthetic"] else "Анонимизированный"]
                             if card["city_imputed"]:
                                 badges.append("Город оценочный")
