@@ -13,6 +13,12 @@ LIST_FIELDS = ("categories", "event_formats", "languages", "busy_dates")
 BOOL_FIELDS = ("city_imputed", "synthetic", "price_imputed")
 
 
+def _norm(value):
+    if value is None:
+        return ""
+    return " ".join(str(value).split()).casefold()
+
+
 def _parse_bool(value, field, row_number):
     normalized = value.strip().casefold()
     if normalized not in {"true", "false"}:
@@ -67,10 +73,10 @@ def validate_request(request):
     errors = []
     normalized = {}
     for field in ("city", "date", "event_format", "category"):
-        value = str(request.get(field, "")).strip()
+        value = _norm(request.get(field))
         if not value:
             errors.append(f"Поле {field} обязательно")
-        normalized[field] = value.casefold()
+        normalized[field] = value
     try:
         raw_date = str(request.get("date", "")).strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
@@ -103,16 +109,11 @@ def validate_request(request):
         except (TypeError, ValueError):
             errors.append("Длительность должна быть конечным положительным числом")
             normalized["hours"] = None
-    language = str(request.get("language") or "").strip()
-    normalized["language"] = language.casefold() or None
+    normalized["language"] = _norm(request.get("language")) or None
     normalized["date"] = parsed_date.isoformat() if parsed_date else ""
     if errors:
         raise ValueError("; ".join(errors))
     return normalized
-
-
-def _norm(value):
-    return " ".join(str(value).split()).casefold()
 
 
 def _has(values, expected):

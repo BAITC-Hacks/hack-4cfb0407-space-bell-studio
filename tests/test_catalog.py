@@ -59,6 +59,20 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(expected, [c['id'] for c in recommend(list(reversed(rows)), req)['cards']])
         self.assertEqual(expected, [c['id'] for c in recommend(rows, req)['cards']])
 
+
+    def test_normalizes_multiple_spaces_in_request_and_catalog(self):
+        row = profile('spaces', category='Банкетный   зал')
+        row['city'] = 'Алматы'
+        result = recommend([row], request(category='Банкетный зал', city='Алматы  '))
+        self.assertEqual('MATCHED', result['status'])
+        self.assertEqual(['spaces'], [card['id'] for card in result['cards']])
+
+    def test_none_required_text_is_missing(self):
+        for field in ('city', 'date', 'event_format', 'category'):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    recommend([profile('x')], request(**{field: None}))
+
     def test_outside_dates_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Для этой даты нет данных о занятости'):
             recommend([profile('x')], request(date='2027-01-01'))

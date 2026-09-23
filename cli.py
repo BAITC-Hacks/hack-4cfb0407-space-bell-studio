@@ -8,54 +8,16 @@ from catalog import load_catalog, recommend
 
 
 def demo_requests(rows):
-    dates = []
-    day = date(2026, 9, 23)
-    while day <= date(2026, 12, 31):
-        dates.append(day.isoformat())
-        day += timedelta(days=1)
-
-    def eligible_count(city, category, day, fmt, budget):
-        req = dict(city=city, category=category, date=day, event_format=fmt, budget_kzt=budget)
-        return recommend(rows, req)
-
-    dense = None
-    for city, category in sorted({(p['city'], c) for p in rows for c in p['categories']}):
-        for fmt in sorted({f for p in rows for f in p['event_formats']}):
-            for day in dates:
-                result = eligible_count(city, category, day, fmt, 10000000)
-                if result['status'] == 'MATCHED' and result['eligible_count'] >= 4:
-                    dense = dict(city=city, category=category, date=day, event_format=fmt, budget_kzt=10000000)
-                    break
-            if dense: break
-        if dense: break
-    if dense is None:
-        raise RuntimeError('Не найден пример плотной категории в датасете')
-
-    category_counts = {}
-    for p in rows:
-        for cat in p['categories']:
-            key = (p['city'], cat)
-            category_counts[key] = category_counts.get(key, 0) + 1
-    rare = None
-    for (city, cat), count in sorted(category_counts.items(), key=lambda x: (x[1], x[0])):
-        for fmt in sorted({f for p in rows for f in p['event_formats']}):
-            for day in dates:
-                req = dict(city=city, category=cat, date=day, event_format=fmt, budget_kzt=10000000)
-                result = recommend(rows, req)
-                if result['status'] == 'MATCHED':
-                    rare = req
-                    break
-            if rare: break
-        if rare: break
-    if rare is None:
-        raise RuntimeError('Не найден пример редкой категории в датасете')
-
-    return {
-        'Плотная категория': dense,
-        'Редкая категория': rare,
-        'Категории нет в городе': dict(city='Зарубежье', category='Банкетный зал', date=dense['date'], event_format=dense['event_format'], budget_kzt=1000000),
-        'Нет совпадений': dict(city=dense['city'], category=dense['category'], date=dense['date'], event_format=dense['event_format'], budget_kzt=0.01),
+    """Fixed, previously verified inputs; all outcomes are computed from current CSV."""
+    cases = {
+        'A: Плотная категория': dict(city='Алматы', category='Банкетный зал', date='2026-09-26', event_format='корпоратив', budget_kzt=10000000),
+        'B: Редкая категория': dict(city='Алматы', category='Флорист', date='2026-09-23', event_format='конференция', budget_kzt=10000000),
+        'C: Категории нет в городе': dict(city='Зарубежье', category='Банкетный зал', date='2026-09-26', event_format='корпоратив', budget_kzt=1000000),
+        'D: Условия исключают всех': dict(city='Алматы', category='Банкетный зал', date='2026-09-26', event_format='корпоратив', budget_kzt=1),
     }
+    cases['E: Первая дата'] = dict(city='Алматы', category='Банкетный зал', date='2026-09-23', event_format='день рождения', budget_kzt=10000000)
+    cases['E: Вторая дата'] = dict(cases['E: Первая дата'], date='2026-09-26')
+    return cases
 
 
 def print_result(label, request, rows):
@@ -66,8 +28,13 @@ def print_result(label, request, rows):
             print(f"- {card['anon_name']} ({card['id']}) — {card['category']}, {card['city']}, {card['price_label']}")
             print(f"  {card['explanation']}")
             print(f"  {card['profile_status']}; город оценочный: {card['city_is_estimated']}; цена оценочная: {card['price_is_estimated']}")
-        if result.get('fewer_reason'):
-            print(result['fewer_reason'])
+        if len(result['cards']) < 3:
+            print(f"В городе профилей категории: {result['category_count']}; подошло: {result['eligible_count']}.")
+            reasons = {key: count for key, count in result['exclusions'].items() if count}
+            if reasons:
+                print('Исключения (счётчики пересекаются): ' + json.dumps(reasons, ensure_ascii=False))
+            if result.get('fewer_reason'):
+                print(result['fewer_reason'])
     elif result['status'] == 'NO_MATCH':
         print('Подходящих профилей нет. Счётчики исключений пересекаются: ' + json.dumps(result['exclusions'], ensure_ascii=False))
     else:
@@ -94,32 +61,13 @@ def main(argv=None):
             cases = demo_requests(rows)
             for label, request in cases.items():
                 print_result(label, request, rows)
-            # Search real profiles for two same-query cases where the date changes matched IDs.
-            found = None
-            all_dates = [date(2026, 9, 23) + timedelta(days=n) for n in range(100)]
-            for profile in sorted(rows, key=lambda p: p['id']):
-                for cat in profile['categories']:
-                    for fmt in profile['event_formats']:
-                        budget = max(p['price_from_kzt'] for p in rows) + 1
-                        base = dict(city=profile['city'], category=cat, event_format=fmt, budget_kzt=budget)
-                        for busy in profile['busy_dates']:
-                            free = next((d.isoformat() for d in all_dates if d.isoformat() not in profile['busy_dates']), None)
-                            if free:
-                                a = recommend(rows, dict(base, date=busy))
-                                b = recommend(rows, dict(base, date=free))
-                                ida = [x['id'] for x in a['cards']]
-                                idb = [x['id'] for x in b['cards']]
-                                if ida != idb:
-                                    found = (dict(base, date=busy), dict(base, date=free))
-                                    break
-                        if found: break
-                    if found: break
-                if found: break
-            if not found:
-                raise RuntimeError('Не найден пример, где занятость меняет ID')
-            print('\nСравнение дат (остальные параметры одинаковы):')
-            for request in found:
-                print_result(request['date'], request, rows)
+            first_id = [c['id'] for c in recommend(rows, cases['E: Первая дата'])['cards']]
+            second_id = [c['id'] for c in recommend(rows, cases['E: Вторая дата'])['cards']]
+            changed = set(second_id) - set(first_id)
+            for contractor_id in sorted(changed):
+                profile = next(p for p in rows if p['id'] == contractor_id)
+                if cases['E: Первая дата']['date'] in profile['busy_dates'] and cases['E: Вторая дата']['date'] not in profile['busy_dates']:
+                    print(f"Проверка календаря: {contractor_id} отсутствует {cases['E: Первая дата']['date']} — дата есть в busy_dates; на {cases['E: Вторая дата']['date']} по календарю датасета не занят.")
             return 0
         fields = ('city', 'date', 'event_format', 'category', 'budget_kzt')
         missing = [field for field in fields if getattr(args, field) is None]
