@@ -58,7 +58,8 @@ def query_summary(request):
 
 st.set_page_config(page_title="Firebird Match", page_icon="🔥", layout="wide")
 st.title("🔥 Firebird Match")
-st.caption("Подбор event-подрядчиков по календарю, бюджету и условиям заказа")
+st.subheader("Подбор подрядчиков под реальные условия мероприятия")
+st.caption("Python проверяет ограничения. AI помогает объяснить уже проверенный результат.")
 try:
     rows = catalog()
 except (OSError, ValueError):
@@ -125,20 +126,39 @@ with right:
     request = st.session_state.last_submitted_request
     result = st.session_state.last_result
     if result is None:
-        st.info("Укажите условия мероприятия и нажмите «Подобрать подрядчиков».")
+        st.info("Заполните параметры слева — здесь появятся до трёх подходящих вариантов.")
+        empty_columns = st.columns(3)
+        for column, item in zip(empty_columns, ("Строгие ограничения", "Объяснение выбора", "Сравнение вариантов")):
+            with column:
+                st.caption(f"✓ {item}")
     else:
         st.caption("Последний выполненный запрос")
         st.markdown(f"**{query_summary(request)}**")
         if result["status"] == "MATCHED":
             st.success(f"Найдено {result['eligible_count']} {profile_word(result['eligible_count'])} · показываем {len(result['cards'])}")
+            overview = st.columns(3)
+            overview[0].metric("Подходит", result["eligible_count"])
+            overview[1].metric("Показано", len(result["cards"]))
+            overview[2].metric("Режим", "AI Agent" if result["source"] == "ai_evidence" else "Local")
+            if result["eligible_count"] > len(result["cards"]):
+                st.caption(f"Подошло {result['eligible_count']} профилей. Показываем первые {len(result['cards'])} в стабильном порядке: начальная цена «от», затем ID.")
+            else:
+                st.caption("Показаны все подходящие профили.")
         elif result["status"] == "NO_CATEGORY_IN_CITY":
             st.warning(f"В каталоге города {request['city']} нет категории «{request['category']}»")
         else:
             st.warning("По текущим условиям подходящих вариантов нет")
+            if result["status"] == "NO_MATCH":
+                st.metric("Подходит", 0)
         if result["source"] == "ai_evidence":
-            st.caption("✨ AI-assisted explanation · Подбор, фильтры и порядок рассчитаны Python.")
+            with st.container(border=True):
+                st.markdown("**✨ AI Agent active**")
+                st.caption("Модель выбрала релевантную деталь из уже отобранных Python профилей.")
+                st.caption("Подбор, фильтры и порядок рассчитаны Python.")
         else:
-            st.caption("Локальное объяснение · подбор, фильтры и порядок рассчитаны Python.")
+            with st.container(border=True):
+                st.markdown("**✓ Local deterministic mode**")
+                st.caption("Подбор полностью рассчитан Python. AI сейчас не используется.")
 
         if result["status"] == "MATCHED":
             for start in range(0, len(result["cards"]), 2):
@@ -154,20 +174,20 @@ with right:
                             evidence = profile_detail(card)
                             if evidence:
                                 st.markdown("**AI-выбранная деталь профиля**" if result["source"] == "ai_evidence" else "**Деталь профиля**")
-                                st.markdown(f"«{evidence}»")
+                                st.info(f"«{evidence}»", icon="✨" if result["source"] == "ai_evidence" else None)
+                            st.markdown("**Перед выбором уточнить**")
+                            st.caption("; ".join(before_selection(card)))
                             badges = ["Синтетический" if card["synthetic"] else "Анонимизированный"]
                             if card["city_imputed"]:
                                 badges.append("Город оценочный")
                             if card["price_imputed"]:
                                 badges.append("Цена оценочная")
                             st.caption(" · ".join(badges))
-                            st.markdown("**Перед выбором уточнить**")
-                            st.caption("; ".join(before_selection(card)))
 
             compared = comparison_rows(result["cards"], request, rows)
             if compared:
                 st.subheader("Сравнение вариантов")
-                st.caption("Фактические различия профилей, без рейтинга. Деталь профиля выбрана AI только в AI режиме.")
+                st.caption("Сравнение фактов — не рейтинг. Деталь профиля выбрана AI только в AI режиме.")
                 comparison_columns = st.columns(len(compared), gap="small")
                 for column, entry in zip(comparison_columns, compared):
                     with column:
@@ -179,9 +199,11 @@ with right:
         delta = query_delta(rows, st.session_state.previous_submitted_request,
                             st.session_state.previous_result, request, result)
         if delta:
-            st.subheader("Что изменилось с прошлого подбора")
-            for line in delta["lines"]:
-                st.write(line)
+            with st.container(border=True):
+                st.subheader("Что изменилось с прошлого подбора")
+                st.caption("Причина указывается только для подтверждённого изменения одного параметра.")
+                for line in delta["lines"]:
+                    st.write(line)
 
         if result["status"] == "NO_MATCH" or (result["status"] == "MATCHED" and len(result["cards"]) < 3):
             with st.container(border=True):
@@ -196,21 +218,26 @@ with right:
 
         if result["status"] == "NO_MATCH":
             st.subheader("План Б")
+            st.caption("Что можно изменить, сохранив остальные условия")
             alternatives = result["alternatives"]
             alternative_date = alternatives["alternative_date"]
             minimum_budget = alternatives["minimum_budget"]
+            plan_columns = st.columns(2 if alternative_date and minimum_budget else 1)
             if alternative_date:
-                with st.container(border=True):
-                    st.markdown("**Попробовать другую дату**")
-                    shown_date = date.fromisoformat(alternative_date["alternative_date"]).strftime("%d.%m.%Y")
-                    st.write(f"На {shown_date} найдено {alternative_date['eligible_count']} "
-                             f"{profile_word(alternative_date['eligible_count'])} при тех же остальных условиях.")
+                with plan_columns[0]:
+                    with st.container(border=True):
+                        shown_date = date.fromisoformat(alternative_date["alternative_date"]).strftime("%d.%m.%Y")
+                        st.markdown("**ДРУГАЯ ДАТА**")
+                        st.markdown(f"### {shown_date}")
+                        st.write(f"{alternative_date['eligible_count']} {profile_word(alternative_date['eligible_count'])}")
             if minimum_budget:
-                with st.container(border=True):
-                    st.markdown("**Изменить бюджет**")
-                    st.write(f"Первый вариант появляется при минимальной начальной цене «от» "
-                             f"{money(minimum_budget['minimum_budget_kzt'])} ₸ при тех же остальных условиях.")
-                    st.caption("Это не окончательная стоимость.")
+                budget_column = plan_columns[1] if alternative_date and minimum_budget else plan_columns[0]
+                with budget_column:
+                    with st.container(border=True):
+                        st.markdown("**БЮДЖЕТ**")
+                        st.markdown(f"### от {money(minimum_budget['minimum_budget_kzt'])} ₸")
+                        st.write("первый подходящий вариант")
+                        st.caption("Это не окончательная стоимость.")
             if not alternative_date and not minimum_budget:
                 st.info("Одного изменения даты или бюджета недостаточно.")
 
@@ -236,3 +263,7 @@ with st.expander("Как работает подбор?"):
 8. Если никто не подошёл, отдельно проверяем изменение только даты или только бюджета.
 
 Основные ограничения никогда не ослабляются автоматически. Цена «от» и свободный день в датасете не гарантируют окончательную стоимость или бронь.""")
+
+with st.expander("Как работает AI-агент"):
+    st.markdown("Запрос пользователя  \n↓  \nLLM  \n↓ вызывает `recommend_contractors`  \n↓  \nPython фильтрует каталог  \n↓  \nLLM выбирает evidence  \n↓  \nPython проверяет evidence  \n↓  \nКарточки")
+    st.caption("The model interprets; Python decides.")
