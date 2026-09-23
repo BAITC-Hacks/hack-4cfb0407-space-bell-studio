@@ -1,2 +1,7 @@
-# hack-4cfb0407-space-bell-studio
-Hackathon team repository for space bell studio
+# Firebird Match
+
+Кейс Firebird #79-lite: «Умный подбор подрядчиков», трек 06 «Креативные индустрии».
+
+Источник данных — датасет организаторов Firebird #79-lite. Текущий этап: реализован импорт и базовая проверка CSV; детерминированный подбор, AI и интерфейс ещё в работе.
+
+Требуется Python 3. Команда проверки: `python -m unittest discover -s tests -v`.
